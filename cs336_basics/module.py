@@ -130,7 +130,10 @@ class RoPE(nn.Module):
 def silu(x):
     return x * torch.sigmoid(x)
 
-def softmax(x, dim):
+def softmax(x, dim, temperature=1.0):
+    if temperature <= 0:
+        raise ValueError("temperature zero error")
+    x = x / temperature
     x = x - x.max(dim, keepdim=True).values
     exp = x.exp()
     return exp / exp.sum(dim, keepdim=True)
