@@ -127,8 +127,11 @@ class RoPE(nn.Module):
         result[..., 1::2] = x_even * sin + x_odd * cos
         return result
 
+def silu(x):
+    return x * torch.sigmoid(x)
+
 def softmax(x, dim):
-    x -= x.max(dim, keepdim=True).values
+    x = x - x.max(dim, keepdim=True).values
     exp = x.exp()
     return exp / exp.sum(dim, keepdim=True)
 
@@ -140,7 +143,7 @@ def scaled_dot_product_attention(Q, K, V, mask:None):
 
 
 class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, d_model, num_heads, pos_encoder=None, device=None, dtype=None):
+    def __init__(self, d_model, num_heads, max_seq_len, pos_encoder=None, device=None, dtype=None):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -150,7 +153,14 @@ class MultiHeadSelfAttention(nn.Module):
         self.W_q = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_k = Linear(d_model, d_model, device=device, dtype=dtype) 
         self.W_v = Linear(d_model, d_model, device=device, dtype=dtype) 
-        self.W_o = Linear(d_model, d_model, device=device, dtype=dtype)  
+        self.W_o = Linear(d_model, d_model, device=device, dtype=dtype) 
+        self.register_buffer("causal_mask", torch.triu(torch.ones(max_seq_len, max_seq_len, dtype=torch.bool, device=device), diagonal=1) == 0, persistent=False)
+
+    def scaled_dot_product_attention(self, Q, K, V, mask:None):
+        scores = einsum(Q, K, "... queries d_k, ... keys d_k -> ... queries keys")
+        if mask is not None:
+            scores = scores.masked_fill(mask == False, float("-inf"))
+        return einsum(softmax(scores/ math.sqrt(K.shape[-1]), -1), V, "... queries keys, ... keys d_v -> ... queries d_v") 
 
     def forward(self, x, token_positions=None):
         seq_len = x.shape[-2]
@@ -163,8 +173,8 @@ class MultiHeadSelfAttention(nn.Module):
         if self.pos_encoder is not None and token_positions is not None:
             Qh = self.pos_encoder(Qh, token_positions)
             Kh = self.pos_encoder(Kh, token_positions)
-        self.register_buffer("causal_mask", torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool), diagonal=1) == 0, persistent=False)
-        out = rearrange(scaled_dot_product_attention(Qh, Kh, Vh, self.causal_mask), "... h seq_len d -> ... seq_len (h d)")
+        mask = self.causal_mask[:seq_len, :seq_len]
+        out = rearrange(self.scaled_dot_product_attention(Qh, Kh, Vh, mask), "... h seq_len d -> ... seq_len (h d)")
         return self.W_o(out)
 
 class TransformerBlock(nn.Module):
@@ -172,7 +182,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.rope = RoPE(rope_theta, d_model//num_heads, max_seq_len, device)
         self.swiglu = SwiGLU(d_model, d_ff, device, dtype)
-        self.mha = MultiHeadSelfAttention(d_model, num_heads, pos_encoder=self.rope, device=device, dtype=dtype)
+        self.mha = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, pos_encoder=self.rope, device=device, dtype=dtype)
         self.norm1 = RMSNorm(d_model, device=device, dtype=dtype)
         self.norm2 = RMSNorm(d_model, device=device, dtype=dtype)
         self.token_positions = torch.arange(max_seq_len, device=device)

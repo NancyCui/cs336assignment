@@ -9,7 +9,7 @@
     """
 
 import os
-import torch
+import pickle
 import regex as re
 from collections import Counter, defaultdict
 import multiprocessing
@@ -171,22 +171,26 @@ def get_max(pair_count):
 
 def train_bpe(input_path, vocab_size, special_tokens):
     # text = read_text(input_path)
-    num_processes = 8
+    num_processes = os.cpu_count() or 1
     word_freqs = defaultdict(int)
     chunk_texts = []
     cache_special_tokens(special_tokens)
 
     with open(input_path, "rb") as f:
-        boundaries = find_chunk_boundaries(f, num_processes*4, special_tokens[0].encode("utf-8"))
+        boundaries = find_chunk_boundaries(f, num_processes * 4, special_tokens[0].encode("utf-8"))
         for start, end in zip(boundaries[:-1], boundaries[1:]):
             f.seek(start)
             chunk = f.read(end - start).decode("utf-8")
             chunk_texts.append(chunk)
         
     with multiprocessing.Pool(num_processes) as pool:
-        word_dicts = pool.map(pretokenize_chunk, [(ct, special_tokens) for ct in chunk_texts])
+        #word_dicts = pool.map(pretokenize_chunk, [(ct, special_tokens) for ct in chunk_texts])
+        for tmp_word_dicts in pool.imap_unordered(pretokenize_chunk, [(ct, special_tokens) for ct in chunk_texts]):
+            for word, freq in tmp_word_dicts.items():
+                word_freqs[word] += freq
+
     
-    word_freqs = merge_dicts(word_dicts)
+    #word_freqs = merge_dicts(word_dicts)
 
     # 构建索引
     pair_counts, pair_to_words = build_index(word_freqs)
@@ -234,4 +238,10 @@ def train_bpe(input_path, vocab_size, special_tokens):
 
 
 if __name__ == "__main__":
-    train_bpe("../data/TinyStoriesV2-GPT4-valid.txt", 1000, ["<|endoftext|>"])
+    #vocab, merges = train_bpe("../data/owt_train.txt", 32000, ["<|endoftext|>"])
+    vocab, merges = train_bpe("../data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"])
+    with open("../data/bpe_vocab.pkl", "wb") as f:
+        pickle.dump(vocab, f)
+    with open("../data/bpe_merges.pkl", "wb") as f:
+        pickle.dump(merges, f)
+    

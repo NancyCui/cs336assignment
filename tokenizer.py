@@ -9,6 +9,8 @@ import heapq
 import regex as re
 from typing import BinaryIO
 import multiprocessing
+import numpy as np
+import time
 from collections import Counter
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Type
 
@@ -46,6 +48,8 @@ class Tokenizer:
             vocab = pickle.load(f)
         with open(merges_path, "rb") as f:
             merges = pickle.load(f)
+        print(f"vocab size: {len(vocab)}")
+        print(f"merges size: {len(merges)}")
         return cls(vocab=vocab, merges=merges, special_tokens=special_tokens)
 
     def word2bytes(self, word):
@@ -207,12 +211,14 @@ if __name__ == "__main__":
         "../data/bpe_merges.pkl",
         special_tokens=["<|endoftext|>"],
     )
-    input_path = "../data/owt_train.txt"
+    # input_path = "../data/TinyStoriesV2-GPT4-train.txt"
+    input_path = "../data/TinyStoriesV2-GPT4-valid.txt"
     num_processes = 8
     special_tokens = ["<|endoftext|>"]
 
     chunk_texts = []
     bytes_len = 0
+    start_time = time.time()
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(f, num_processes*4, special_tokens[0].encode("utf-8"))
         for start, end in zip(boundaries[:-1], boundaries[1:]):
@@ -221,11 +227,20 @@ if __name__ == "__main__":
             chunk = chunk_bytes.decode("utf-8")
             bytes_len += len(chunk_bytes)
             chunk_texts.append(chunk)
-
+    
     with multiprocessing.Pool(num_processes) as pool:
         token_ids_pool = pool.map(tokenizer.encode, chunk_texts)
     all_token_ids = [tid for chunk in token_ids_pool for tid in chunk]
-        
+    elapsed = time.time() - start_time
 
-    print(f"Compression ratio: {bytes_len/len(all_token_ids):.2f}, byte_len: {bytes_len}")
+    token_ids_np = np.array(all_token_ids, dtype=np.uint16)
+    # np.save("../data/token_ids_tiny_stories.npy", token_ids_np)
+    np.save("../data/token_ids_tiny_stories_valid.npy", token_ids_np)
+
     
+    num_tokens = len(all_token_ids)
+    print(f"Compression ratio: {bytes_len/num_tokens:.2f}, byte_len: {bytes_len}")
+    throughput = bytes_len * 1.0 / elapsed   # bytes/second
+    print(f"Throughput: {throughput / 1e6:.6f} MB/s")
+    print(f"Tokens: {num_tokens}")
+    print(f"Tokens/s: {num_tokens / elapsed:.2f}")
